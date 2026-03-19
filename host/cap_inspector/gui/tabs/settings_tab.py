@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
 
 from cap_inspector.comm.encoder_link import EncoderLink
 from cap_inspector.comm.protocol import (
@@ -34,6 +34,8 @@ from cap_inspector.core.config import AppConfig
 
 class SettingsTab(QWidget):
     """Encoder settings: excitation frequency, averaging, mode, pitch, logging."""
+
+    logging_toggled = Signal(bool)
 
     def __init__(self, link: EncoderLink, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -156,3 +158,4 @@ class SettingsTab(QWidget):
 
     def _on_logging_toggled(self, checked: bool):
         self._config.data_logging = checked
+        self.logging_toggled.emit(checked)

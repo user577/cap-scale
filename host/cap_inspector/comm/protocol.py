@@ -6,8 +6,9 @@ Commands:
     ZR (2B): 'Z' 'R' — zero position
 
 Response formats:
-    Position mode (1): 0xAA 0x55 + position[4B LE signed]
+    Position mode (1): 0xAA 0x55 + position[4B LE signed]  (6 bytes)
     Diagnostics mode (2): 0xAA 0x55 + position[4B] + sin[2B] + cos[2B] + amplitude[2B]
+                          + ch0[2B] + ch1[2B] + ch2[2B] + ch3[2B]  (20 bytes)
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ ADC_MAX = (1 << ADC_BITS) - 1  # 4095
 # Protocol constants
 SYNC_MARKER = b'\xAA\x55'
 POSITION_PACKET_LEN = 6    # sync(2) + position(4)
-DIAG_PACKET_LEN = 12       # sync(2) + position(4) + sin(2) + cos(2) + amp(2)
+DIAG_PACKET_LEN = 20       # sync(2) + pos(4) + sin(2) + cos(2) + amp(2) + ch0-3(8)
 
 # Modes
 MODE_POSITION = 1
@@ -75,9 +76,10 @@ def parse_position_packet(data: bytes) -> int | None:
 
 
 def parse_diagnostics_packet(data: bytes) -> dict | None:
-    """Parse 12-byte diagnostics packet.
+    """Parse 20-byte diagnostics packet.
 
-    Returns dict with keys: position, sin, cos, amplitude. Or None on failure.
+    Returns dict with keys: position, sin, cos, amplitude, ch0-ch3.
+    Or None on failure.
     """
     sync_pos = data.find(SYNC_MARKER)
     if sync_pos < 0 or len(data) < sync_pos + DIAG_PACKET_LEN:
@@ -88,12 +90,20 @@ def parse_diagnostics_packet(data: bytes) -> dict | None:
     sin_val = struct.unpack('<h', data[offset + 4:offset + 6])[0]
     cos_val = struct.unpack('<h', data[offset + 6:offset + 8])[0]
     amplitude = struct.unpack('<H', data[offset + 8:offset + 10])[0]
+    ch0 = struct.unpack('<h', data[offset + 10:offset + 12])[0]
+    ch1 = struct.unpack('<h', data[offset + 12:offset + 14])[0]
+    ch2 = struct.unpack('<h', data[offset + 14:offset + 16])[0]
+    ch3 = struct.unpack('<h', data[offset + 16:offset + 18])[0]
 
     return {
         'position': position,
         'sin': sin_val,
         'cos': cos_val,
         'amplitude': amplitude,
+        'ch0': ch0,
+        'ch1': ch1,
+        'ch2': ch2,
+        'ch3': ch3,
     }
 
 

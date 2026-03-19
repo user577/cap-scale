@@ -136,7 +136,12 @@ class SignalTab(QWidget):
     def _on_diagnostics(self, data: dict):
         self._sin_buf.append(data['sin'])
         self._cos_buf.append(data['cos'])
-        self._amplitudes = [data.get('amplitude', 0)] * 4  # Simplified
+        self._amplitudes = [
+            abs(data.get('ch0', 0)),
+            abs(data.get('ch1', 0)),
+            abs(data.get('ch2', 0)),
+            abs(data.get('ch3', 0)),
+        ]
 
     def _update_plots(self):
         if not self._sin_buf:

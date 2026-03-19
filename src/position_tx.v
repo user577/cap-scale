@@ -2,10 +2,9 @@
 //
 // Three modes:
 //   Mode 1 (6B):  0xAA 0x55 + position[4B LE signed]
-//   Mode 2 (12B): 0xAA 0x55 + position[4B] + sin[2B] + cos[2B] + amplitude[2B]
+//   Mode 2 (20B): 0xAA 0x55 + position[4B] + sin[2B] + cos[2B] + amplitude[2B]
+//                  + ch0[2B] + ch1[2B] + ch2[2B] + ch3[2B]
 //   Mode 3:       Raw ADC stream (debug) — not yet implemented
-//
-// Same tx_data/tx_start/tx_busy interface to uart_tx as frame_tx.v
 
 module position_tx (
     input  wire        clk,
@@ -21,6 +20,12 @@ module position_tx (
     input  wire signed [15:0] cos_val,
     input  wire        [15:0] amplitude,
 
+    // Per-channel amplitudes
+    input  wire signed [15:0] ch0_amp,
+    input  wire signed [15:0] ch1_amp,
+    input  wire signed [15:0] ch2_amp,
+    input  wire signed [15:0] ch3_amp,
+
     // UART TX interface
     output reg  [7:0]  tx_data,
     output reg         tx_start,
@@ -30,27 +35,36 @@ module position_tx (
     output reg         transmitting
 );
 
-    localparam S_IDLE    = 4'd0,
-               S_SYNC0   = 4'd1,
-               S_SYNC1   = 4'd2,
-               S_POS_0   = 4'd3,   // position[7:0]
-               S_POS_1   = 4'd4,   // position[15:8]
-               S_POS_2   = 4'd5,   // position[23:16]
-               S_POS_3   = 4'd6,   // position[31:24]
-               S_SIN_LO  = 4'd7,
-               S_SIN_HI  = 4'd8,
-               S_COS_LO  = 4'd9,
-               S_COS_HI  = 4'd10,
-               S_AMP_LO  = 4'd11,
-               S_AMP_HI  = 4'd12;
+    localparam S_IDLE    = 5'd0,
+               S_SYNC0   = 5'd1,
+               S_SYNC1   = 5'd2,
+               S_POS_0   = 5'd3,
+               S_POS_1   = 5'd4,
+               S_POS_2   = 5'd5,
+               S_POS_3   = 5'd6,
+               S_SIN_LO  = 5'd7,
+               S_SIN_HI  = 5'd8,
+               S_COS_LO  = 5'd9,
+               S_COS_HI  = 5'd10,
+               S_AMP_LO  = 5'd11,
+               S_AMP_HI  = 5'd12,
+               S_CH0_LO  = 5'd13,
+               S_CH0_HI  = 5'd14,
+               S_CH1_LO  = 5'd15,
+               S_CH1_HI  = 5'd16,
+               S_CH2_LO  = 5'd17,
+               S_CH2_HI  = 5'd18,
+               S_CH3_LO  = 5'd19,
+               S_CH3_HI  = 5'd20;
 
-    reg [3:0]  state;
+    reg [4:0]  state;
     reg        pending;
 
     // Latched data (stable during transmission)
     reg signed [31:0] lat_pos;
     reg signed [15:0] lat_sin, lat_cos;
     reg        [15:0] lat_amp;
+    reg signed [15:0] lat_ch0, lat_ch1, lat_ch2, lat_ch3;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -62,13 +76,16 @@ module position_tx (
         end else begin
             tx_start <= 1'b0;
 
-            // Latch pending position
             if (pos_valid) begin
                 pending <= 1'b1;
                 lat_pos <= position;
                 lat_sin <= sin_val;
                 lat_cos <= cos_val;
                 lat_amp <= amplitude;
+                lat_ch0 <= ch0_amp;
+                lat_ch1 <= ch1_amp;
+                lat_ch2 <= ch2_amp;
+                lat_ch3 <= ch3_amp;
             end
 
             case (state)
@@ -81,104 +98,71 @@ module position_tx (
                     end
                 end
 
-                S_SYNC0: begin
-                    if (!tx_busy) begin
-                        tx_data  <= 8'hAA;
-                        tx_start <= 1'b1;
-                        state    <= S_SYNC1;
-                    end
+                S_SYNC0: if (!tx_busy) begin
+                    tx_data <= 8'hAA; tx_start <= 1'b1; state <= S_SYNC1;
+                end
+                S_SYNC1: if (!tx_busy && !tx_start) begin
+                    tx_data <= 8'h55; tx_start <= 1'b1; state <= S_POS_0;
                 end
 
-                S_SYNC1: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= 8'h55;
-                        tx_start <= 1'b1;
-                        state    <= S_POS_0;
-                    end
+                S_POS_0: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_pos[7:0]; tx_start <= 1'b1; state <= S_POS_1;
+                end
+                S_POS_1: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_pos[15:8]; tx_start <= 1'b1; state <= S_POS_2;
+                end
+                S_POS_2: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_pos[23:16]; tx_start <= 1'b1; state <= S_POS_3;
+                end
+                S_POS_3: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_pos[31:24]; tx_start <= 1'b1;
+                    state <= (mode == 8'd2) ? S_SIN_LO : S_IDLE;
                 end
 
-                S_POS_0: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_pos[7:0];
-                        tx_start <= 1'b1;
-                        state    <= S_POS_1;
-                    end
+                // Diagnostics mode (mode 2)
+                S_SIN_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_sin[7:0]; tx_start <= 1'b1; state <= S_SIN_HI;
+                end
+                S_SIN_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_sin[15:8]; tx_start <= 1'b1; state <= S_COS_LO;
+                end
+                S_COS_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_cos[7:0]; tx_start <= 1'b1; state <= S_COS_HI;
+                end
+                S_COS_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_cos[15:8]; tx_start <= 1'b1; state <= S_AMP_LO;
+                end
+                S_AMP_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_amp[7:0]; tx_start <= 1'b1; state <= S_AMP_HI;
+                end
+                S_AMP_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_amp[15:8]; tx_start <= 1'b1; state <= S_CH0_LO;
                 end
 
-                S_POS_1: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_pos[15:8];
-                        tx_start <= 1'b1;
-                        state    <= S_POS_2;
-                    end
+                // Per-channel amplitudes
+                S_CH0_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch0[7:0]; tx_start <= 1'b1; state <= S_CH0_HI;
                 end
-
-                S_POS_2: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_pos[23:16];
-                        tx_start <= 1'b1;
-                        state    <= S_POS_3;
-                    end
+                S_CH0_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch0[15:8]; tx_start <= 1'b1; state <= S_CH1_LO;
                 end
-
-                S_POS_3: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_pos[31:24];
-                        tx_start <= 1'b1;
-                        if (mode == 8'd2)
-                            state <= S_SIN_LO;
-                        else
-                            state <= S_IDLE;
-                    end
+                S_CH1_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch1[7:0]; tx_start <= 1'b1; state <= S_CH1_HI;
                 end
-
-                // Diagnostics mode (mode 2) — additional fields
-                S_SIN_LO: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_sin[7:0];
-                        tx_start <= 1'b1;
-                        state    <= S_SIN_HI;
-                    end
+                S_CH1_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch1[15:8]; tx_start <= 1'b1; state <= S_CH2_LO;
                 end
-
-                S_SIN_HI: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_sin[15:8];
-                        tx_start <= 1'b1;
-                        state    <= S_COS_LO;
-                    end
+                S_CH2_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch2[7:0]; tx_start <= 1'b1; state <= S_CH2_HI;
                 end
-
-                S_COS_LO: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_cos[7:0];
-                        tx_start <= 1'b1;
-                        state    <= S_COS_HI;
-                    end
+                S_CH2_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch2[15:8]; tx_start <= 1'b1; state <= S_CH3_LO;
                 end
-
-                S_COS_HI: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_cos[15:8];
-                        tx_start <= 1'b1;
-                        state    <= S_AMP_LO;
-                    end
+                S_CH3_LO: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch3[7:0]; tx_start <= 1'b1; state <= S_CH3_HI;
                 end
-
-                S_AMP_LO: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_amp[7:0];
-                        tx_start <= 1'b1;
-                        state    <= S_AMP_HI;
-                    end
-                end
-
-                S_AMP_HI: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_data  <= lat_amp[15:8];
-                        tx_start <= 1'b1;
-                        state    <= S_IDLE;
-                    end
+                S_CH3_HI: if (!tx_busy && !tx_start) begin
+                    tx_data <= lat_ch3[15:8]; tx_start <= 1'b1; state <= S_IDLE;
                 end
 
                 default: state <= S_IDLE;

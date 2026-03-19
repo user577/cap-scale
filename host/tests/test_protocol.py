@@ -92,12 +92,17 @@ class TestPacketParsers:
         sin_val = -1234
         cos_val = 4567
         amp = 3000
+        ch0, ch1, ch2, ch3 = 1000, 2000, -1000, -2000
         packet = (
             SYNC_MARKER
             + struct.pack('<i', pos)
             + struct.pack('<h', sin_val)
             + struct.pack('<h', cos_val)
             + struct.pack('<H', amp)
+            + struct.pack('<h', ch0)
+            + struct.pack('<h', ch1)
+            + struct.pack('<h', ch2)
+            + struct.pack('<h', ch3)
         )
         result = parse_diagnostics_packet(packet)
         assert result is not None
@@ -105,9 +110,13 @@ class TestPacketParsers:
         assert result['sin'] == sin_val
         assert result['cos'] == cos_val
         assert result['amplitude'] == amp
+        assert result['ch0'] == ch0
+        assert result['ch1'] == ch1
+        assert result['ch2'] == ch2
+        assert result['ch3'] == ch3
 
     def test_parse_diagnostics_too_short(self):
-        packet = SYNC_MARKER + b'\x00' * 5
+        packet = SYNC_MARKER + b'\x00' * 10  # Need 18 bytes after sync
         result = parse_diagnostics_packet(packet)
         assert result is None
 

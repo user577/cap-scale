@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from cap_inspector.comm.serial_link import SerialLink
 from cap_inspector.core.config import AppConfig
+from cap_inspector.core.data_logger import DataLogger
 from cap_inspector.gui.tabs.calibration_tab import CalibrationTab
 from cap_inspector.gui.tabs.live_position_tab import LivePositionTab
 from cap_inspector.gui.tabs.runout_tab import RunoutTab
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
 
         self._link = SerialLink(self)
         self._config = AppConfig.load()
+        self._logger = DataLogger()
 
         self._build_toolbar()
         self._build_tabs()
@@ -89,6 +91,9 @@ class MainWindow(QMainWindow):
         self._btn_disconnect.clicked.connect(self._disconnect)
         self._link.connection_changed.connect(self._on_connection_changed)
         self._link.error_occurred.connect(self._on_error)
+        self._link.position_received.connect(self._on_log_position)
+        self._link.diagnostics_received.connect(self._on_log_diagnostics)
+        self._settings_tab.logging_toggled.connect(self._on_logging_toggled)
 
     def _refresh_ports(self):
         self._combo_port.clear()
@@ -123,7 +128,23 @@ class MainWindow(QMainWindow):
     def _on_error(self, msg: str):
         self._statusbar.showMessage(f"Error: {msg}", 5000)
 
+    def _on_log_position(self, pos: int):
+        self._logger.log_position(pos)
+
+    def _on_log_diagnostics(self, data: dict):
+        self._logger.log_diagnostics(data)
+
+    def _on_logging_toggled(self, enabled: bool):
+        if enabled:
+            diag = self._config.encoder.mode == 2
+            path = self._logger.start(diagnostics_mode=diag)
+            self._statusbar.showMessage(f"Logging to {path}", 3000)
+        else:
+            self._logger.stop()
+            self._statusbar.showMessage("Logging stopped", 2000)
+
     def closeEvent(self, event):
+        self._logger.stop()
         self._link.stop_streaming()
         self._link.disconnect()
         self._config.save()
