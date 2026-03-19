@@ -1,0 +1,30 @@
+# FPGA build artifacts
+*.json
+*.config
+*.bit
+*.svf
+
+# Simulation outputs
+testbench/*.vvp
+testbench/*.vcd
+
+# Python
+__pycache__/
+*.pyc
+host/.venv/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# KiCad backups
+pcb/*-backups/
+pcb/**/fp-info-cache

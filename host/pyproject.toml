@@ -1,0 +1,18 @@
+[project]
+name = "cap-scale-inspector"
+version = "0.1.0"
+description = "Host application for Cap-Scale capacitive PCB linear encoder"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5",
+    "pyserial>=3.5",
+    "numpy>=1.24",
+    "pyqtgraph>=0.13",
+    "scipy>=1.10",
+]
+
+[dependency-groups]
+dev = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

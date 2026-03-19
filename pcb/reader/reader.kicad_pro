@@ -1,0 +1,11 @@
+{
+  "board": {
+    "3dviewports": [],
+    "design_settings": {},
+    "ipc2581": { "dist": "", "mfg": "", "mfg_pn": "", "mpn": "" },
+    "layer_presets": [],
+    "layers": []
+  },
+  "meta": { "filename": "reader.kicad_pro", "version": 1 },
+  "sheets": [["", ""]]
+}
