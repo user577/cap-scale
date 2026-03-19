@@ -51,8 +51,8 @@ module tb_position_calc;
             measurement_done <= 1;
             @(posedge clk);
             measurement_done <= 0;
-            // Wait for pipeline
-            repeat (10) @(posedge clk);
+            // Wait for 5-stage pipeline
+            repeat (12) @(posedge clk);
         end
     endtask
 
@@ -74,7 +74,7 @@ module tb_position_calc;
         // sin_diff = ch0-ch2 = 0, cos_diff = ch1-ch3 = 2000
         $display("  angle=%0d sin=%0d cos=%0d pos=%0d",
                  angle, sin_out, cos_out, position);
-        if (angle < 200) begin
+        if (angle < 50) begin  // Tight: expect ~0 with proper LUT
             $display("  PASS: Angle near 0");
             pass_count = pass_count + 1;
         end else begin
@@ -88,7 +88,7 @@ module tb_position_calc;
         apply_measurement(16'd2000, 16'd1000, 16'd0, 16'd1000);
         // sin_diff = 2000, cos_diff = 0
         $display("  angle=%0d sin=%0d cos=%0d", angle, sin_out, cos_out);
-        if (angle >= 800 && angle <= 1200) begin
+        if (angle >= 974 && angle <= 1074) begin  // 1024 +/- 50
             $display("  PASS: Angle near 1024 (90 deg)");
             pass_count = pass_count + 1;
         end else begin
@@ -102,11 +102,25 @@ module tb_position_calc;
         apply_measurement(16'd1000, 16'd0, 16'd1000, 16'd2000);
         // sin_diff = 0, cos_diff = -2000
         $display("  angle=%0d sin=%0d cos=%0d", angle, sin_out, cos_out);
-        if (angle >= 1800 && angle <= 2300) begin
+        if (angle >= 1998 && angle <= 2098) begin  // 2048 +/- 50
             $display("  PASS: Angle near 2048 (180 deg)");
             pass_count = pass_count + 1;
         end else begin
             $display("  FAIL: Expected angle ~2048, got %0d", angle);
+            fail_count = fail_count + 1;
+        end
+
+        // ---- Test 3b: 45 degrees (LUT boundary) ----
+        // sin=cos at 45 degrees: ch0-ch2 = ch1-ch3
+        $display("Test 3b: 45 degrees (sin=cos, LUT boundary)");
+        apply_measurement(16'd2000, 16'd2000, 16'd0, 16'd0);
+        // sin_diff = 2000, cos_diff = 2000
+        $display("  angle=%0d (expected ~512)", angle);
+        if (angle >= 462 && angle <= 562) begin  // 512 +/- 50
+            $display("  PASS: Angle near 512 (45 deg)");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  FAIL: Expected angle ~512, got %0d", angle);
             fail_count = fail_count + 1;
         end
 

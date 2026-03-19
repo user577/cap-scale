@@ -35,14 +35,11 @@ module tb_sync_demod;
     integer pass_count, fail_count;
     integer i;
 
-    task send_sample;
-        input [11:0] data;
-        input        ref;
-        input [1:0]  ch;
+    task send_sample(input [11:0] data, input ref_val, input [1:0] ch);
         begin
             @(posedge clk);
             adc_data     <= data;
-            demod_ref    <= ref;
+            demod_ref    <= ref_val;
             channel_sel  <= ch;
             sample_valid <= 1;
             @(posedge clk);

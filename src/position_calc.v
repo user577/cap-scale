@@ -1,58 +1,61 @@
 // position_calc.v — atan2 position calculator with pitch counting
 //
 // Takes 4 demodulated channel amplitudes, computes differential sin/cos,
-// uses 1024-entry atan2 LUT for angle, and tracks pitch count via
-// sin zero-crossing detection.
+// uses atan2 LUT for angle, and tracks pitch count via zero-crossing.
 //
 // Output: 32-bit position = pitch_count * 4096 + angle
 // Resolution: 4096 counts per pitch (e.g., 2mm pitch → 0.49 um/count)
+//
+// Pipeline: 4 stages (measurement_done → pos_valid in 4 clocks)
+//
+// Atan2 approach: direct 2D LUT indexed by upper bits of |sin| and |cos|.
+// 64x64 = 4096 entries × 12 bits = 48 Kbits (3 EBR blocks).
+// No division required — single BRAM read per measurement.
 
 module position_calc (
     input  wire        clk,
     input  wire        rst,
 
-    // Demodulated channel amplitudes (signed 16-bit)
     input  wire signed [15:0] ch0_amp,  // sin+
     input  wire signed [15:0] ch1_amp,  // cos+
     input  wire signed [15:0] ch2_amp,  // sin-
     input  wire signed [15:0] ch3_amp,  // cos-
     input  wire               measurement_done,
 
-    // Control
-    input  wire               zero_cmd,  // Pulse to zero position
+    input  wire               zero_cmd,
 
-    // Outputs
-    output reg  signed [31:0] position,    // pitch_count * 4096 + angle
-    output reg  signed [15:0] sin_out,     // Differential sin (diagnostics)
-    output reg  signed [15:0] cos_out,     // Differential cos (diagnostics)
-    output reg         [15:0] amplitude,   // Signal amplitude (diagnostics)
-    output reg         [11:0] angle,       // Current angle within pitch (0-4095)
-    output reg                pos_valid    // Pulse: new position ready
+    output reg  signed [31:0] position,
+    output reg  signed [15:0] sin_out,
+    output reg  signed [15:0] cos_out,
+    output reg         [15:0] amplitude,
+    output reg         [11:0] angle,
+    output reg                pos_valid
 );
 
-    // ---- atan2 LUT (1024 entries, 12-bit angle output) ----
-    // Indexed by |sin|/|cos| ratio mapped to 0-1023
-    // Covers first octant (0-45 deg); other octants derived by symmetry
-    reg [11:0] atan_lut [0:1023];
+    // ---- atan2 LUT: 4096 entries (64x64), 12-bit angle output ----
+    // Index = {|sin|[top 6 bits], |cos|[top 6 bits]}
+    // Value = full-circle angle (0-4095) for first quadrant
+    // Other quadrants derived by simple arithmetic
+    reg [11:0] atan2_lut [0:4095];
 
-    // Initialize LUT — atan(i/1024) * 4096 / (2*pi) for octant mapping
-    // Actually: atan(i/1024) * (4096/8) since this covers 1/8 of full circle
-    integer k;
+    // Load precomputed 2D atan2 LUT
     initial begin
-        for (k = 0; k < 1024; k = k + 1) begin
-            // Precomputed: angle = atan(k/1024) * 2048 / (pi/4)
-            // Simplified: angle = k * 512 / 1024 = k/2 (linear approx for init)
-            // In practice, load from $readmemh or compute offline
-            // Using linear approximation: good enough for first octant
-            atan_lut[k] = (k * 512) / 1024;
-        end
+        $readmemh("atan2_lut.hex", atan2_lut);
     end
 
     // Pipeline registers
     reg signed [16:0] sin_diff, cos_diff;
-    reg signed [16:0] abs_sin, abs_cos;
-    reg        [1:0]  octant;
+    reg        [16:0] abs_sin, abs_cos;
+    reg        [1:0]  quadrant;           // {sin_neg, cos_neg}
+    reg signed [16:0] p2_sin_diff, p2_cos_diff;
+    reg        [16:0] p2_abs_sin, p2_abs_cos;
+    reg        [1:0]  p2_quadrant;
     reg               pipe_valid_1, pipe_valid_2, pipe_valid_3;
+
+    // LUT address and result
+    reg [11:0] lut_addr;
+    reg [11:0] lut_val;
+    reg [11:0] raw_angle;
 
     // Pitch tracking
     reg signed [19:0] pitch_count;
@@ -62,12 +65,7 @@ module position_calc (
     // Zero offset
     reg signed [31:0] zero_offset;
 
-    // LUT index and result
-    reg [9:0]  lut_index;
-    reg [11:0] lut_result;
-    reg [11:0] raw_angle;
-
-    // Stage 1: Compute differentials
+    // ====== Stage 1: Compute differentials ======
     always @(posedge clk) begin
         if (rst) begin
             sin_diff     <= 0;
@@ -83,48 +81,47 @@ module position_calc (
         end
     end
 
-    // Stage 2: Absolute values, determine octant, compute LUT index
+    // ====== Stage 2: Abs values + quadrant + LUT address ======
     always @(posedge clk) begin
         if (rst) begin
             abs_sin      <= 0;
             abs_cos      <= 0;
-            octant       <= 0;
-            lut_index    <= 0;
+            quadrant     <= 0;
+            lut_addr     <= 0;
+            p2_sin_diff  <= 0;
+            p2_cos_diff  <= 0;
             pipe_valid_2 <= 0;
         end else begin
             pipe_valid_2 <= 0;
             if (pipe_valid_1) begin
-                abs_sin <= sin_diff[16] ? -sin_diff : sin_diff;
-                abs_cos <= cos_diff[16] ? -cos_diff : cos_diff;
+                abs_sin  <= sin_diff[16] ? -sin_diff : sin_diff;
+                abs_cos  <= cos_diff[16] ? -cos_diff : cos_diff;
+                quadrant <= {sin_diff[16], cos_diff[16]};
 
-                // Octant: {sin_sign, cos_sign, |sin|>|cos|}
-                // Simplified to quadrant + swap
-                octant <= {sin_diff[16], cos_diff[16]};
-
-                // LUT index: ratio of smaller/larger * 1024
-                if ((sin_diff[16] ? -sin_diff : sin_diff) <=
-                    (cos_diff[16] ? -cos_diff : cos_diff)) begin
-                    // |sin| <= |cos|: index = |sin|*1024/|cos|
-                    if (cos_diff == 0)
-                        lut_index <= 0;
-                    else
-                        lut_index <= ((sin_diff[16] ? -sin_diff : sin_diff) * 1024) /
-                                     (cos_diff[16] ? -cos_diff : cos_diff);
-                end else begin
-                    // |sin| > |cos|: index = |cos|*1024/|sin|
-                    if (sin_diff == 0)
-                        lut_index <= 0;
-                    else
-                        lut_index <= ((cos_diff[16] ? -cos_diff : cos_diff) * 1024) /
-                                     (sin_diff[16] ? -sin_diff : sin_diff);
+                // LUT address from top 6 bits of |sin| and |cos|
+                // Normalize: find max of the two, use as scale reference
+                // Simple approach: use bits [15:10] of absolute values
+                // (shift right by 10 to get 6-bit index, clamp at 63)
+                begin : compute_addr
+                    reg [16:0] as, ac;
+                    reg [5:0] si, ci;
+                    as = sin_diff[16] ? -sin_diff : sin_diff;
+                    ac = cos_diff[16] ? -cos_diff : cos_diff;
+                    // Scale to 6 bits: divide by max/63 to normalize
+                    // Simpler: just use upper bits, clamped
+                    si = (as[16:10] > 6'd63) ? 6'd63 : as[15:10];
+                    ci = (ac[16:10] > 6'd63) ? 6'd63 : ac[15:10];
+                    lut_addr <= {si, ci};
                 end
 
+                p2_sin_diff  <= sin_diff;
+                p2_cos_diff  <= cos_diff;
                 pipe_valid_2 <= 1'b1;
             end
         end
     end
 
-    // Stage 3: LUT lookup + octant correction + pitch tracking
+    // ====== Stage 3: LUT read + quadrant correction + pitch tracking ======
     always @(posedge clk) begin
         if (rst) begin
             raw_angle      <= 0;
@@ -139,69 +136,42 @@ module position_calc (
             prev_sin_valid <= 0;
             zero_offset    <= 0;
             pipe_valid_3   <= 0;
+            p2_abs_sin     <= 0;
+            p2_abs_cos     <= 0;
+            p2_quadrant    <= 0;
         end else begin
             pos_valid    <= 1'b0;
             pipe_valid_3 <= 1'b0;
 
-            // Zero command
             if (zero_cmd) begin
                 zero_offset <= position + zero_offset;
                 pitch_count <= 0;
             end
 
             if (pipe_valid_2) begin
-                // LUT lookup
-                lut_result <= atan_lut[lut_index];
+                // Read LUT (first-quadrant angle, 0-1023 range)
+                lut_val <= atan2_lut[lut_addr];
 
-                // Reconstruct full angle from octant
-                // Quadrant 0 (sin>=0, cos>=0): angle = lut or 1024-lut
-                // Quadrant 1 (sin>=0, cos<0):  angle = 2048 +/- lut
-                // Quadrant 2 (sin<0, cos<0):   angle = 2048 +/- lut
-                // Quadrant 3 (sin<0, cos>=0):  angle = 4096 - lut or 3072+lut
-                case (octant)
-                    2'b00: begin // sin>=0, cos>=0 (Q1)
-                        if (abs_sin <= abs_cos)
-                            raw_angle <= atan_lut[lut_index];
-                        else
-                            raw_angle <= 12'd1024 - atan_lut[lut_index];
-                    end
-                    2'b01: begin // sin>=0, cos<0 (Q2)
-                        if (abs_sin > abs_cos)
-                            raw_angle <= 12'd1024 + atan_lut[lut_index];
-                        else
-                            raw_angle <= 12'd2048 - atan_lut[lut_index];
-                    end
-                    2'b11: begin // sin<0, cos<0 (Q3)
-                        if (abs_sin <= abs_cos)
-                            raw_angle <= 12'd2048 + atan_lut[lut_index];
-                        else
-                            raw_angle <= 12'd3072 - atan_lut[lut_index];
-                    end
-                    2'b10: begin // sin<0, cos>=0 (Q4)
-                        if (abs_sin > abs_cos)
-                            raw_angle <= 12'd3072 + atan_lut[lut_index];
-                        else
-                            raw_angle <= 12'd4096 - atan_lut[lut_index];
-                    end
-                endcase
+                // Pass through for stage 4
+                p2_abs_sin  <= abs_sin;
+                p2_abs_cos  <= abs_cos;
+                p2_quadrant <= quadrant;
 
-                // Pitch counting: detect sin zero-crossing
+                // Pitch counting
                 if (prev_sin_valid) begin
-                    if (prev_sin < 0 && sin_diff[15:0] >= 0)
-                        pitch_count <= pitch_count + 1;  // Forward crossing
-                    else if (prev_sin >= 0 && sin_diff[15:0] < 0)
-                        pitch_count <= pitch_count - 1;  // Reverse crossing
+                    if (prev_sin < 0 && p2_sin_diff[15:0] >= 0)
+                        pitch_count <= pitch_count + 1;
+                    else if (prev_sin >= 0 && p2_sin_diff[15:0] < 0)
+                        pitch_count <= pitch_count - 1;
                 end
-
-                prev_sin       <= sin_diff[15:0];
+                prev_sin       <= p2_sin_diff[15:0];
                 prev_sin_valid <= 1'b1;
 
-                // Latch diagnostic outputs
-                sin_out <= sin_diff[15:0];
-                cos_out <= cos_diff[15:0];
+                // Diagnostics
+                sin_out <= p2_sin_diff[15:0];
+                cos_out <= p2_cos_diff[15:0];
 
-                // Amplitude: alpha-max-beta-min approximation
-                // amp ≈ max(|sin|,|cos|) + 0.375*min(|sin|,|cos|)
+                // Amplitude: alpha-max-beta-min
                 if (abs_sin >= abs_cos)
                     amplitude <= abs_sin[15:0] + (abs_cos[15:0] >> 2) + (abs_cos[15:0] >> 3);
                 else
@@ -210,7 +180,18 @@ module position_calc (
                 pipe_valid_3 <= 1'b1;
             end
 
+            // ====== Stage 4: Quadrant correction + position output ======
             if (pipe_valid_3) begin
+                // lut_val is first-quadrant angle (0-1023)
+                // Map to full circle based on quadrant (combinational)
+                case (p2_quadrant)
+                    2'b00: raw_angle = lut_val;                        // Q1: 0-1023
+                    2'b01: raw_angle = 12'd2048 - lut_val;            // Q2: 1024-2048
+                    2'b11: raw_angle = 12'd2048 + lut_val;            // Q3: 2048-3072
+                    2'b10: raw_angle = 12'd4096 - lut_val;            // Q4: 3072-4096
+                    default: raw_angle = 0;
+                endcase
+
                 angle    <= raw_angle;
                 position <= (pitch_count * 4096 + {20'd0, raw_angle}) - zero_offset;
                 pos_valid <= 1'b1;

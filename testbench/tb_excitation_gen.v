@@ -121,12 +121,15 @@ module tb_excitation_gen;
 
         // ---- Test 5: Runtime frequency change ----
         $display("Test 5: Runtime frequency change to 100 kHz (div=800)");
+        @(posedge clk);
         freq_div = 800;
         config_valid = 1;
         @(posedge clk);
         config_valid = 0;
 
-        // Count clocks for one full cycle
+        // Skip 3 cycles to let config propagate and settle
+        @(posedge cycle_done);
+        @(posedge cycle_done);
         @(posedge cycle_done);
         begin : measure_period
             integer clk_count;

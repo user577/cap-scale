@@ -37,9 +37,9 @@ module tb_channel_mux;
 
     task pulse_cycle_done;
         begin
-            @(posedge clk);
+            @(negedge clk);  // Set between clock edges to avoid race
             cycle_done = 1;
-            @(posedge clk);
+            @(negedge clk);
             cycle_done = 0;
         end
     endtask
